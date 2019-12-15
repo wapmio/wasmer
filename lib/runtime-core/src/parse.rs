@@ -249,6 +249,7 @@ pub fn read_module<
                         .map_err(|x| LoadError::Codegen(format!("{:?}", x)))?;
                 }
 
+                let mut num_static_slots: usize = sig.params().len();
                 let mut body_begun = false;
 
                 loop {
@@ -257,6 +258,7 @@ pub fn read_module<
                         ParserState::Error(err) => return Err(LoadError::Parse(*err)),
                         ParserState::FunctionBodyLocals { ref locals } => {
                             for &(count, ty) in locals.iter() {
+                                num_static_slots += count as usize;
                                 fcg.feed_local(ty, count as usize)
                                     .map_err(|x| LoadError::Codegen(format!("{:?}", x)))?;
                             }
@@ -270,6 +272,15 @@ pub fn read_module<
                                     .run(
                                         Some(fcg),
                                         Event::Internal(InternalEvent::FunctionBegin(id as u32)),
+                                        &info.read().unwrap(),
+                                    )
+                                    .map_err(|x| LoadError::Codegen(x))?;
+                                middlewares
+                                    .run(
+                                        Some(fcg),
+                                        Event::Internal(InternalEvent::FunctionStaticSlotCount(
+                                            num_static_slots,
+                                        )),
                                         &info.read().unwrap(),
                                     )
                                     .map_err(|x| LoadError::Codegen(x))?;
