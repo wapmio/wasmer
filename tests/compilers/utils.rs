@@ -53,14 +53,14 @@ pub fn get_store(canonicalize_nans: bool) -> Store {
 pub fn get_store_with_middlewares<I: Iterator<Item = Arc<dyn ModuleMiddleware>>>(
     middlewares: I,
 ) -> Store {
+    #[allow(unused_mut)]
     let mut compiler_config = get_compiler(false);
-    for x in middlewares {
-        compiler_config.push_middleware(x);
-    }
     #[cfg(feature = "test-jit")]
-    let engine = JIT::new(&compiler_config).engine();
+    let engine = JIT::new(&compiler_config).middlewares(middlewares).engine();
     #[cfg(feature = "test-native")]
-    let engine = Native::new(&mut compiler_config).engine();
+    let engine = Native::new(&mut compiler_config)
+        .middlewares(middlewares)
+        .engine();
     Store::new(&engine)
 }
 

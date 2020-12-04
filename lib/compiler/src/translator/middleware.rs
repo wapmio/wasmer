@@ -26,7 +26,7 @@ pub trait ModuleMiddleware: Debug + Send + Sync {
 }
 
 /// A function middleware specialized for a single function.
-pub trait FunctionMiddleware: Debug {
+pub trait FunctionMiddleware: Debug + Send + Sync {
     /// Processes the given operator.
     fn feed<'a>(
         &mut self,
@@ -181,6 +181,11 @@ impl<'a> MiddlewareBinaryReader<'a> {
     /// Returns the number of bytes remaining in the inner `BinaryReader`.
     pub fn bytes_remaining(&self) -> usize {
         self.state.inner.bytes_remaining()
+    }
+
+    /// Returns the number of bytes in the `BinaryReader`.
+    pub fn len(&self) -> usize {
+        self.state.inner.range().end - self.state.inner.range().start
     }
 
     /// Returns whether the inner `BinaryReader` has reached the end of the file.

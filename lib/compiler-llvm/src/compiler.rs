@@ -7,17 +7,16 @@ use inkwell::memory_buffer::MemoryBuffer;
 use inkwell::module::{Linkage, Module};
 use inkwell::targets::FileType;
 use inkwell::DLLStorageClass;
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use std::sync::Arc;
+use rayon::prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use wasmer_compiler::{
     Compilation, CompileError, CompileModuleInfo, Compiler, CustomSection, CustomSectionProtection,
-    Dwarf, FunctionBodyData, ModuleMiddlewareChain, ModuleTranslationState, RelocationTarget,
-    SectionBody, SectionIndex, Symbol, SymbolRegistry, Target,
+    Dwarf, MiddlewareBinaryReader, ModuleTranslationState, RelocationTarget, SectionBody,
+    SectionIndex, Symbol, SymbolRegistry, Target,
 };
 use wasmer_types::entity::{EntityRef, PrimaryMap};
 use wasmer_types::{FunctionIndex, LocalFunctionIndex, SignatureIndex};
 
-//use std::sync::Mutex;
+//use std::sync::{Arc, Mutex};
 
 /// A compiler that compiles a WebAssembly module with LLVM, translating the Wasm to LLVM IR,
 /// optimizing it and then translating to assembly.
@@ -80,7 +79,7 @@ impl LLVMCompiler {
         target: &Target,
         compile_info: &'module CompileModuleInfo,
         module_translation: &ModuleTranslationState,
-        function_body_inputs: &PrimaryMap<LocalFunctionIndex, FunctionBodyData<'data>>,
+        function_body_inputs: PrimaryMap<LocalFunctionIndex, MiddlewareBinaryReader>,
         symbol_registry: &dyn SymbolRegistry,
         wasmer_metadata: &[u8],
     ) -> Result<Vec<u8>, CompileError> {
@@ -94,18 +93,18 @@ impl LLVMCompiler {
         function_body_inputs
             .into_iter()
             .collect::<Vec<_>>()
-            .par_iter()
+            .par_iter_mut()
             .map_init(
                 || {
                     let target_machine = self.config().target_machine(target);
                     FuncTranslator::new(target_machine)
                 },
-                |func_translator, (i, input)| {
+                |func_translator, (i, function_body)| {
                     let module = func_translator.translate_to_module(
                         &compile_info.module,
                         module_translation,
                         i,
-                        input,
+                        function_body,
                         self.config(),
                         &compile_info.memory_styles,
                         &compile_info.table_styles,
@@ -208,29 +207,29 @@ impl LLVMCompiler {
 }
 
 impl Compiler for LLVMCompiler {
+    fn supports_experimental_native_compile_module(&self) -> bool {
+        true
+    }
+
     fn experimental_native_compile_module<'data, 'module>(
         &self,
         target: &Target,
         compile_info: &'module mut CompileModuleInfo,
         module_translation: &ModuleTranslationState,
         // The list of function bodies
-        function_body_inputs: &PrimaryMap<LocalFunctionIndex, FunctionBodyData<'data>>,
+        function_body_inputs: PrimaryMap<LocalFunctionIndex, MiddlewareBinaryReader>,
         symbol_registry: &dyn SymbolRegistry,
         // The metadata to inject into the wasmer_metadata section of the object file.
         wasmer_metadata: &[u8],
-    ) -> Option<Result<Vec<u8>, CompileError>> {
-        let mut module = (*compile_info.module).clone();
-        self.config.middlewares.apply_on_module_info(&mut module);
-        compile_info.module = Arc::new(module);
-
-        Some(self.compile_native_object(
+    ) -> Result<Vec<u8>, CompileError> {
+        self.compile_native_object(
             target,
             compile_info,
             module_translation,
             function_body_inputs,
             symbol_registry,
             wasmer_metadata,
-        ))
+        )
     }
 
     /// Compile the module using LLVM, producing a compilation result with
@@ -240,15 +239,12 @@ impl Compiler for LLVMCompiler {
         target: &Target,
         compile_info: &'module mut CompileModuleInfo,
         module_translation: &ModuleTranslationState,
-        function_body_inputs: PrimaryMap<LocalFunctionIndex, FunctionBodyData<'data>>,
+        function_body_inputs: PrimaryMap<LocalFunctionIndex, MiddlewareBinaryReader>,
     ) -> Result<Compilation, CompileError> {
         //let data = Arc::new(Mutex::new(0));
         let memory_styles = &compile_info.memory_styles;
         let table_styles = &compile_info.table_styles;
 
-        let mut module = (*compile_info.module).clone();
-        self.config.middlewares.apply_on_module_info(&mut module);
-        compile_info.module = Arc::new(module);
         let module = &compile_info.module;
 
         // TODO: merge constants in sections.
@@ -257,22 +253,22 @@ impl Compiler for LLVMCompiler {
         let mut frame_section_bytes = vec![];
         let mut frame_section_relocations = vec![];
         let functions = function_body_inputs
-            .iter()
-            .collect::<Vec<(LocalFunctionIndex, &FunctionBodyData<'_>)>>()
-            .par_iter()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .par_iter_mut()
             .map_init(
                 || {
                     let target_machine = self.config().target_machine(target);
                     FuncTranslator::new(target_machine)
                 },
-                |func_translator, (i, input)| {
+                |func_translator, (i, function_body)| {
                     // TODO: remove (to serialize)
                     //let _data = data.lock().unwrap();
                     func_translator.translate(
                         module,
                         module_translation,
                         i,
-                        input,
+                        function_body,
                         self.config(),
                         memory_styles,
                         &table_styles,
