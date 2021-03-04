@@ -251,6 +251,9 @@ impl Module {
         Ok(Self::from_artifact(store, artifact))
     }
 
+    /// Low-level constructor. It must be used to build a unique
+    /// `Module`. It must not be used to build back a `Module` from an
+    /// already compiled `Artifact`.
     fn from_artifact(store: &Store, artifact: Arc<dyn Artifact>) -> Self {
         Self {
             store: store.clone(),
@@ -411,14 +414,44 @@ impl Module {
         &self.artifact.module_ref()
     }
 
-    /// Gets the [`Artifact`] used internally by the Module.
+    /// Query the artifact to fetch information from it without
+    /// extracting the artifact from the module.
+    ///
+    /// The artifact defined in the `Module` is abstracted behind `dyn
+    /// Artifact`. When querying, downcasting to a concrete artifact
+    /// type is done by inferring the type from the closure used to
+    /// query. Something like this:
+    ///
+    /// ```rust,ignore
+    /// use wasmer_engine_object_file::ObjectFileArtifact;
+    ///
+    /// let symbol_registry = unsafe {
+    ///     module.query_artifact(|artifact: &ObjectFileArtifact| {
+    ///         Some(Arc::clone(artifact.symbol_registry()))
+    ///     })
+    /// };
+    /// ```
+    ///
+    /// If downcasting the artifact to `A` fails, the method will
+    /// return `None`.
     ///
     /// This API is hidden because it's not necessarily stable;
     /// this functionality is required for some core functionality though, like
-    /// the object file engine.
+    /// the [`wasmer-engine-object-file`].
+    ///
+    /// # Safety
+    ///
+    /// This function is marked as `unsafe` because it's unstable.
     #[doc(hidden)]
-    pub fn artifact(&self) -> &Arc<dyn Artifact> {
-        &self.artifact
+    pub unsafe fn query_artifact<A, Q, R>(&self, query: Q) -> Option<R>
+    where
+        A: Artifact + 'static,
+        Q: FnOnce(&A) -> Option<R>,
+        R: ?Sized + Clone,
+    {
+        let artifact_ref: &A = self.artifact.downcast_ref()?;
+
+        query(artifact_ref)
     }
 }
 
