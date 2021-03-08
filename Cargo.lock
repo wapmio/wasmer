@@ -2307,6 +2307,7 @@ dependencies = [
  "wasmer-engine",
  "wasmer-engine-jit",
  "wasmer-engine-native",
+ "wasmer-tracing",
  "wasmer-types",
  "wasmer-vm",
  "wat",
@@ -2596,6 +2597,13 @@ dependencies = [
  "thiserror",
  "wasmer-compiler",
  "wasmer-types",
+]
+
+[[package]]
+name = "wasmer-tracing"
+version = "1.0.2"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
