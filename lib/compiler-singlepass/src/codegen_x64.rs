@@ -1,9 +1,15 @@
 use crate::address_map::get_function_address_map;
+use crate::lib::std;
+use crate::lib::std::collections::BTreeMap;
+use crate::lib::std::format;
+use crate::lib::std::iter;
+use crate::lib::std::string::String;
+use crate::lib::std::string::ToString;
+use crate::lib::std::vec;
+use crate::lib::std::vec::Vec;
 use crate::{common_decl::*, config::Singlepass, emitter_x64::*, machine::Machine, x64_decl::*};
 use dynasmrt::{x64::Assembler, DynamicLabel};
 use smallvec::{smallvec, SmallVec};
-use std::collections::BTreeMap;
-use std::iter;
 use wasmer_compiler::wasmparser::{
     MemoryImmediate, Operator, Type as WpType, TypeOrFuncType as WpTypeOrFuncType,
 };
@@ -8745,7 +8751,7 @@ fn sort_call_movs(movs: &mut [(Location, GPR)]) {
     // Cycle detector. Uncomment this to debug possibly incorrect call-mov sequences.
     /*
     {
-        use std::collections::{HashMap, HashSet, VecDeque};
+        use crate::lib::std::collections::{HashMap, HashSet, VecDeque};
         let mut mov_map: HashMap<GPR, HashSet<GPR>> = HashMap::new();
         for mov in movs.iter() {
             if let Location::GPR(src_gpr) = mov.0 {

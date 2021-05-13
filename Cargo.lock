@@ -2640,6 +2640,7 @@ dependencies = [
  "backtrace",
  "cc",
  "cfg-if 0.1.10",
+ "hashbrown",
  "indexmap",
  "libc",
  "loupe",

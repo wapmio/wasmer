@@ -46,6 +46,7 @@ use crate::VMExternRef;
 use loupe::MemoryUsage;
 #[cfg(feature = "enable-rkyv")]
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+#[cfg(feature = "enable-serde")]
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use wasmer_types::{
@@ -684,11 +685,12 @@ pub static wasmer_vm_probestack: unsafe extern "C" fn() = PROBESTACK;
 /// The name of a runtime library routine.
 ///
 /// This list is likely to grow over time.
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
     feature = "enable-rkyv",
     derive(RkyvSerialize, RkyvDeserialize, Archive)
 )]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, MemoryUsage)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, MemoryUsage)]
 pub enum LibCall {
     /// ceil.f32
     CeilF32,

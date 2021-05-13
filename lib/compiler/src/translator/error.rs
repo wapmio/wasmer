@@ -5,7 +5,7 @@ use wasmparser::BinaryReaderError;
 /// on the arguments to this macro.
 #[macro_export]
 macro_rules! wasm_unsupported {
-    ($($arg:tt)*) => { $crate::WasmError::Unsupported(format!($($arg)*)) }
+    ($($arg:tt)*) => { $crate::WasmError::Unsupported($crate::format!($($arg)*)) }
 }
 
 impl From<BinaryReaderError> for WasmError {

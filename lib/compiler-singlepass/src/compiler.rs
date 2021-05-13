@@ -7,6 +7,10 @@ use crate::codegen_x64::{
     CodegenError, FuncGen,
 };
 use crate::config::Singlepass;
+use crate::lib::std::string::ToString;
+use crate::lib::std::sync::Arc;
+use crate::lib::std::vec;
+use crate::lib::std::vec::Vec;
 use loupe::MemoryUsage;
 #[cfg(feature = "rayon")]
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
@@ -192,7 +196,7 @@ impl<T: Send> IntoParIterIfRayon for Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
+    use crate::lib::std::str::FromStr;
     use target_lexicon::triple;
     use wasmer_compiler::{CpuFeature, Features, Triple};
     use wasmer_vm::{MemoryStyle, TableStyle};

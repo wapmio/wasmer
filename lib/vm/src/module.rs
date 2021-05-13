@@ -11,6 +11,7 @@ use rkyv::{
     de::SharedDeserializer, ser::Serializer, ser::SharedSerializer, Archive, Archived,
     Deserialize as RkyvDeserialize, Fallible, Serialize as RkyvSerialize,
 };
+#[cfg(feature = "enable-serde")]
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -55,7 +56,9 @@ impl Default for ModuleId {
 
 /// A translated WebAssembly module, excluding the function bodies and
 /// memory initializers.
-#[derive(Debug, Clone, Serialize, Deserialize, MemoryUsage)]
+
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, MemoryUsage)]
 pub struct ModuleInfo {
     /// A unique identifier (within this process) for this module.
     ///
@@ -63,7 +66,7 @@ pub struct ModuleInfo {
     /// should be computed by the process.
     /// It's not skipped in rkyv, but that is okay, because even though it's skipped in bincode/serde
     /// it's still deserialized back as a garbage number, and later override from computed by the process
-    #[serde(skip_serializing, skip_deserializing)]
+    #[cfg_attr(feature = "enable-serde", serde(skip_serializing, skip_deserializing))]
     pub id: ModuleId,
 
     /// The name of this wasm module, often found in the wasm file.

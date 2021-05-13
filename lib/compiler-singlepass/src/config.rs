@@ -2,8 +2,11 @@
 #![allow(unused_imports, dead_code)]
 
 use crate::compiler::SinglepassCompiler;
+use crate::lib::std::boxed::Box;
+use crate::lib::std::sync::Arc;
+use crate::lib::std::vec;
+use crate::lib::std::vec::Vec;
 use loupe::MemoryUsage;
-use std::sync::Arc;
 use wasmer_compiler::{Compiler, CompilerConfig, CpuFeature, ModuleMiddleware, Target};
 use wasmer_types::Features;
 

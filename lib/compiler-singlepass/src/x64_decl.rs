@@ -1,7 +1,8 @@
 //! X64 structures.
 
 use crate::common_decl::{MachineState, MachineValue, RegisterIndex};
-use std::collections::BTreeMap;
+use crate::lib::std::collections::BTreeMap;
+use crate::lib::std::vec;
 use wasmer_types::Type;
 
 /// General-purpose registers.

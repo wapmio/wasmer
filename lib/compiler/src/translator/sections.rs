@@ -12,12 +12,13 @@
 //! interpreted on the fly.
 use super::environ::ModuleEnvironment;
 use super::state::ModuleTranslationState;
+use crate::lib::std;
+use crate::lib::std::boxed::Box;
+use crate::lib::std::collections::HashMap;
+use crate::lib::std::vec::Vec;
 use crate::wasm_unsupported;
 use crate::{WasmError, WasmResult};
 use core::convert::TryFrom;
-use std::boxed::Box;
-use std::collections::HashMap;
-use std::vec::Vec;
 use wasmer_types::entity::packed_option::ReservedValue;
 use wasmer_types::entity::EntityRef;
 use wasmer_types::{
