@@ -815,7 +815,7 @@ impl Instance {
             .map_or(true, |n| n as usize > data.len())
             || dst
                 .checked_add(len)
-                .map_or(true, |m| m > memory.current_length)
+                .map_or(true, |m| u64::from(m) > memory.current_length)
         {
             return Err(Trap::lib(TrapCode::HeapAccessOutOfBounds));
         }
