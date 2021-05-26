@@ -8,17 +8,20 @@ use rkyv::{
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use wasmer_compiler::{CompileError, CompileModuleInfo, SectionIndex, Symbol, SymbolRegistry};
-use wasmer_engine::DeserializeError;
+use wasmer_compiler::{
+    CompileModuleInfo, CompiledFunctionFrameInfo, SectionIndex, Symbol, SymbolRegistry,
+};
+use wasmer_engine::{DeserializeError, SerializeError};
 use wasmer_types::entity::{EntityRef, PrimaryMap};
 use wasmer_types::{FunctionIndex, LocalFunctionIndex, OwnedDataInitializer, SignatureIndex};
 
-fn to_compile_error(err: impl Error) -> CompileError {
-    CompileError::Codegen(format!("{}", err))
+fn to_serialize_error(err: impl Error) -> SerializeError {
+    SerializeError::Generic(format!("{}", err))
 }
 
 /// Serializable struct that represents the compiled metadata.
 #[derive(
+    Clone,
     Serialize,
     Deserialize,
     Debug,
@@ -33,63 +36,66 @@ pub struct ModuleMetadata {
     pub compile_info: CompileModuleInfo,
     pub prefix: String,
     pub data_initializers: Box<[OwnedDataInitializer]>,
-    // The function body lengths (used to find function by address)
-    pub function_body_lengths: PrimaryMap<LocalFunctionIndex, u64>,
+    pub frame_infos: PrimaryMap<LocalFunctionIndex, CompiledFunctionFrameInfo>,
 }
 
-pub struct ModuleMetadataSymbolRegistry<'a> {
-    pub prefix: &'a String,
+#[derive(MemoryUsage)]
+pub struct ModuleMetadataSymbolRegistry {
+    pub prefix: String,
 }
 
 impl ModuleMetadata {
-    pub fn split<'a>(
-        &'a mut self,
-    ) -> (&'a mut CompileModuleInfo, ModuleMetadataSymbolRegistry<'a>) {
-        let compile_info = &mut self.compile_info;
-        let symbol_registry = ModuleMetadataSymbolRegistry {
-            prefix: &self.prefix,
-        };
-        (compile_info, symbol_registry)
-    }
-
-    pub fn get_symbol_registry<'a>(&'a self) -> ModuleMetadataSymbolRegistry<'a> {
+    pub fn get_symbol_registry(&self) -> ModuleMetadataSymbolRegistry {
         ModuleMetadataSymbolRegistry {
-            prefix: &self.prefix,
+            prefix: self.prefix.clone(),
         }
     }
 
-    pub fn serialize(&mut self) -> Result<Vec<u8>, CompileError> {
+    /// Serialize the Metadata into bytes
+    /// The bytes will have the following format:
+    /// RKYV serialization (any length) + POS (8 bytes)
+    pub fn serialize(&self) -> Result<Vec<u8>, SerializeError> {
         let mut serializer = SharedSerializerAdapter::new(WriteSerializer::new(vec![]));
-        let pos = serializer.serialize_value(self).map_err(to_compile_error)? as u64;
+        let pos = serializer
+            .serialize_value(self)
+            .map_err(to_serialize_error)? as u64;
         let mut serialized_data = serializer.into_inner().into_inner();
         serialized_data.extend_from_slice(&pos.to_le_bytes());
-        if cfg!(target_endian = "big") {
-            serialized_data.extend_from_slice(&[b'b']);
-        } else if cfg!(target_endian = "little") {
-            serialized_data.extend_from_slice(&[b'l']);
-        }
         Ok(serialized_data)
     }
 
+    /// Deserialize the Metadata from a slice.
+    /// The slice must have the following format:
+    /// RKYV serialization (any length) + POS (8 bytes)
+    ///
+    /// # Safety
+    ///
+    /// The `metadata_slice` must be an archive produced by
+    /// `ModuleMetadata::serialize`.
+    /// > Note: right now we are not doing any extra work for validation, but
+    /// > `rkyv` has an option to do bytecheck on the serialized data before
+    /// > serializing (via `rkyv::check_archived_value`).
     pub unsafe fn deserialize(metadata_slice: &[u8]) -> Result<Self, DeserializeError> {
         let archived = Self::archive_from_slice(metadata_slice)?;
         Self::deserialize_from_archive(archived)
     }
 
+    /// # Safety
+    ///
+    /// Please check `ModuleMetadata::deserialize` for the safety details.
     unsafe fn archive_from_slice<'a>(
         metadata_slice: &'a [u8],
     ) -> Result<&'a ArchivedModuleMetadata, DeserializeError> {
-        let mut pos: [u8; 8] = Default::default();
-        let endian = metadata_slice[metadata_slice.len() - 1];
-        if (cfg!(target_endian = "big") && endian == b'l')
-            || (cfg!(target_endian = "little") && endian == b'b')
-        {
-            return Err(DeserializeError::Incompatible("incompatible endian".into()));
+        if metadata_slice.len() < 8 {
+            return Err(DeserializeError::Incompatible(
+                "invalid serialized data".into(),
+            ));
         }
-        pos.copy_from_slice(&metadata_slice[metadata_slice.len() - 9..metadata_slice.len() - 1]);
+        let mut pos: [u8; 8] = Default::default();
+        pos.copy_from_slice(&metadata_slice[metadata_slice.len() - 8..metadata_slice.len()]);
         let pos: u64 = u64::from_le_bytes(pos);
         Ok(archived_value::<ModuleMetadata>(
-            &metadata_slice[..metadata_slice.len() - 9],
+            &metadata_slice[..metadata_slice.len() - 8],
             pos as usize,
         ))
     }
@@ -103,7 +109,7 @@ impl ModuleMetadata {
     }
 }
 
-impl<'a> SymbolRegistry for ModuleMetadataSymbolRegistry<'a> {
+impl SymbolRegistry for ModuleMetadataSymbolRegistry {
     fn symbol_to_name(&self, symbol: Symbol) -> String {
         match symbol {
             Symbol::LocalFunction(index) => {

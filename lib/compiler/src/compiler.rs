@@ -8,6 +8,7 @@ use crate::lib::std::sync::Arc;
 use crate::module::CompileModuleInfo;
 use crate::target::Target;
 use crate::translator::ModuleMiddleware;
+use crate::CompiledFunctionFrameInfo;
 use crate::FunctionBodyData;
 use crate::ModuleTranslationState;
 use crate::SectionIndex;
@@ -15,6 +16,18 @@ use loupe::MemoryUsage;
 use wasmer_types::entity::PrimaryMap;
 use wasmer_types::{Features, FunctionIndex, LocalFunctionIndex, SignatureIndex};
 use wasmparser::{Validator, WasmFeatures};
+
+/// The output of the experimental native compilation.
+/// It returns the object files that the linker will link together after
+/// along with the frame infos necessary for fully traps support.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperimentalNativeCompilation {
+    /// The contents of emitted object files
+    /// The order is irrelevant but deterministic.
+    pub object_files: Vec<Vec<u8>>,
+    /// The frame infos of the files
+    pub frame_infos: PrimaryMap<LocalFunctionIndex, CompiledFunctionFrameInfo>,
+}
 
 /// The compiler configuration options.
 pub trait CompilerConfig {
@@ -112,9 +125,7 @@ pub trait Compiler: Send + MemoryUsage {
         // The list of function bodies
         _function_body_inputs: &PrimaryMap<LocalFunctionIndex, FunctionBodyData<'data>>,
         _symbol_registry: &dyn SymbolRegistry,
-        // The metadata to inject into the wasmer_metadata section of the object file.
-        _wasmer_metadata: &[u8],
-    ) -> Option<Result<Vec<u8>, CompileError>> {
+    ) -> Option<Result<ExperimentalNativeCompilation, CompileError>> {
         None
     }
 
@@ -123,7 +134,7 @@ pub trait Compiler: Send + MemoryUsage {
 }
 
 /// The kinds of wasmer_types objects that might be found in a native object file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub enum Symbol {
     /// A function defined in the wasm.
     LocalFunction(LocalFunctionIndex),

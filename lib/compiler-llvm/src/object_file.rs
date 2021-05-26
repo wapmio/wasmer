@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::num::TryFromIntError;
 
+use crate::translator::FUNCTION_SECTION_NAME;
 use wasmer_compiler::{
     CompileError, CompiledFunctionFrameInfo, CustomSection, CustomSectionProtection,
     CustomSections, FunctionAddressMap, FunctionBody, InstructionAddressMap, Relocation,
@@ -24,6 +25,36 @@ pub struct CompiledFunction {
     pub compiled_function: wasmer_compiler::CompiledFunction,
     pub custom_sections: CustomSections,
     pub eh_frame_section_indices: Vec<SectionIndex>,
+}
+
+pub fn get_function_body_size(data: &[u8]) -> Result<u64, CompileError> {
+    let in_object = object::File::parse(data).map_err(map_object_err)?;
+    let section = in_object.section_by_name(FUNCTION_SECTION_NAME);
+    match section {
+        Some(section) => Ok(section.size()),
+        None => Ok(0),
+    }
+}
+
+/// Get the frame information from an object file.
+pub fn get_frame_info(contents: &[u8]) -> Result<CompiledFunctionFrameInfo, CompileError> {
+    let function_length = get_function_body_size(contents)? as usize;
+    let address_map = FunctionAddressMap {
+        instructions: vec![InstructionAddressMap {
+            srcloc: SourceLoc::default(),
+            code_offset: 0,
+            code_len: function_length,
+        }],
+        start_srcloc: SourceLoc::default(),
+        end_srcloc: SourceLoc::default(),
+        body_offset: 0,
+        body_len: function_length,
+    };
+
+    Ok(CompiledFunctionFrameInfo {
+        address_map,
+        traps: vec![],
+    })
 }
 
 pub fn load_object_file<F>(

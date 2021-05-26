@@ -2,7 +2,9 @@
 //! done as separate steps.
 
 use crate::engine::{NativeEngine, NativeEngineInner};
-use crate::serialize::{ArchivedModuleMetadata, ModuleMetadata};
+#[cfg(feature = "compiler")]
+use crate::serialize::ArchivedModuleMetadata;
+use crate::serialize::ModuleMetadata;
 use libloading::{Library, Symbol as LibrarySymbol};
 use loupe::MemoryUsage;
 use std::error::Error;
@@ -11,7 +13,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "compiler")]
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 #[cfg(feature = "compiler")]
 use tracing::trace;
@@ -21,7 +23,10 @@ use wasmer_compiler::{
     CompileModuleInfo, Compiler, FunctionBodyData, ModuleEnvironment, ModuleMiddlewareChain,
     ModuleTranslationState,
 };
-use wasmer_engine::{Artifact, DeserializeError, InstantiationError, SerializeError};
+use wasmer_engine::{
+    register_frame_info, Artifact, DeserializeError, FunctionExtent, GlobalFrameInfoRegistration,
+    InstantiationError, SerializeError,
+};
 #[cfg(feature = "compiler")]
 use wasmer_engine::{Engine, Tunables};
 #[cfg(feature = "compiler")]
@@ -49,6 +54,7 @@ pub struct NativeArtifact {
     finished_dynamic_function_trampolines: BoxedSlice<FunctionIndex, FunctionBodyPtr>,
     func_data_registry: Arc<FuncDataRegistry>,
     signatures: BoxedSlice<SignatureIndex, VMSharedSignatureIndex>,
+    frame_info_registration: Mutex<Option<GlobalFrameInfoRegistration>>,
 }
 
 fn to_compile_error(err: impl Error) -> CompileError {
@@ -56,6 +62,8 @@ fn to_compile_error(err: impl Error) -> CompileError {
 }
 
 const WASMER_METADATA_SYMBOL: &[u8] = b"WASMER_METADATA";
+const SERIALIZED_METADATA_LENGTH_OFFSET: usize = 0;
+const SERIALIZED_METADATA_CONTENT_OFFSET: usize = 16;
 
 impl NativeArtifact {
     // Mach-O header in Mac
@@ -167,73 +175,60 @@ impl NativeArtifact {
             .into_boxed_slice();
 
         let target_triple = target.triple();
-
-        /*
-        // We construct the function body lengths
-        let function_body_lengths = compilation
-            .get_function_bodies()
-            .values()
-            .map(|function_body| function_body.body.len() as u64)
-            .map(|_function_body| 0u64)
-            .collect::<PrimaryMap<LocalFunctionIndex, u64>>();
-         */
-
-        // TODO: we currently supply all-zero function body lengths.
-        // We don't know the lengths until they're compiled, yet we have to
-        // supply the metadata as an input to the compile.
-        let function_body_lengths = function_body_inputs
-            .keys()
-            .map(|_function_body| 0u64)
-            .collect::<PrimaryMap<LocalFunctionIndex, u64>>();
+        let frame_infos = PrimaryMap::new();
 
         let mut metadata = ModuleMetadata {
             compile_info,
             prefix: engine_inner.get_prefix(&data),
             data_initializers,
-            function_body_lengths,
+            frame_infos,
         };
 
-        let serialized_data = metadata.serialize()?;
+        let metadata_serializer = |metadata: &ModuleMetadata| -> Result<Vec<u8>, CompileError> {
+            let serialized_data = metadata
+                .serialize()
+                .map_err(|e| CompileError::Codegen(format!("{:?}", e)))?;
+            let mut metadata_binary = vec![0; SERIALIZED_METADATA_CONTENT_OFFSET];
+            let mut writable = &mut metadata_binary[SERIALIZED_METADATA_LENGTH_OFFSET..];
+            leb128::write::unsigned(&mut writable, serialized_data.len() as u64)
+                .expect("Should write number");
+            metadata_binary.extend(serialized_data);
+            Ok(metadata_binary)
+        };
 
-        let mut metadata_binary = vec![0; 12];
-        let mut writable = &mut metadata_binary[..];
-        leb128::write::unsigned(&mut writable, serialized_data.len() as u64)
-            .expect("Should write number");
-        metadata_binary.extend(serialized_data);
-
-        let (compile_info, symbol_registry) = metadata.split();
-
+        let symbol_registry = metadata.get_symbol_registry();
         let maybe_obj_bytes = compiler.experimental_native_compile_module(
             &target,
-            &compile_info,
+            &metadata.compile_info,
             module_translation.as_ref().unwrap(),
             &function_body_inputs,
             &symbol_registry,
-            &metadata_binary,
         );
 
-        let filepath = match maybe_obj_bytes {
-            Some(obj_bytes) => {
-                let obj_bytes = obj_bytes?;
-                let file = tempfile::Builder::new()
-                    .prefix("wasmer_native")
-                    .suffix(".o")
-                    .tempfile()
-                    .map_err(to_compile_error)?;
+        let object_filepaths = match maybe_obj_bytes {
+            Some(native_compilation) => {
+                let native_compilation = native_compilation?;
+                let mut all_objects = native_compilation
+                    .object_files
+                    .into_iter()
+                    .map(|content| {
+                        let file = tempfile::Builder::new()
+                            .prefix("wasmer_native")
+                            .suffix(".o")
+                            .tempfile()
+                            .map_err(to_compile_error)?;
 
-                // Re-open it.
-                let (mut file, filepath) = file.keep().map_err(to_compile_error)?;
-                file.write(&obj_bytes).map_err(to_compile_error)?;
-                filepath
-            }
-            None => {
-                let compilation = compiler.compile_module(
-                    &target,
-                    &compile_info,
-                    module_translation.as_ref().unwrap(),
-                    function_body_inputs,
-                )?;
+                        // Re-open it.
+                        let (mut file, filepath) = file.keep().map_err(to_compile_error)?;
+                        file.write(&content).map_err(to_compile_error)?;
+                        Ok(filepath)
+                    })
+                    .collect::<Result<Vec<_>, CompileError>>()?;
+
+                // Constructing the metadata object
                 let mut obj = get_object_for_target(&target_triple).map_err(to_compile_error)?;
+                metadata.frame_infos = native_compilation.frame_infos;
+                let metadata_binary = metadata_serializer(&metadata)?;
                 emit_data(
                     &mut obj,
                     WASMER_METADATA_SYMBOL,
@@ -241,8 +236,41 @@ impl NativeArtifact {
                     std::mem::align_of::<ArchivedModuleMetadata>() as u64,
                 )
                 .map_err(to_compile_error)?;
+                let file = tempfile::Builder::new()
+                    .prefix("wasmer_native")
+                    .suffix(".o")
+                    .tempfile()
+                    .map_err(to_compile_error)?;
+
+                // Re-open it.
+                let (mut file, metadata_object_filepath) = file.keep().map_err(to_compile_error)?;
+                let obj_bytes = obj.write().map_err(to_compile_error)?;
+
+                file.write(&obj_bytes).map_err(to_compile_error)?;
+
+                all_objects.push(metadata_object_filepath);
+                all_objects
+            }
+            None => {
+                let compilation = compiler.compile_module(
+                    &target,
+                    &metadata.compile_info,
+                    module_translation.as_ref().unwrap(),
+                    function_body_inputs,
+                )?;
+                let mut obj = get_object_for_target(&target_triple).map_err(to_compile_error)?;
+                let compiled_function_infos = compilation.get_frame_info();
                 emit_compilation(&mut obj, compilation, &symbol_registry, &target_triple)
                     .map_err(to_compile_error)?;
+                metadata.frame_infos = compiled_function_infos;
+                let metadata_binary = metadata_serializer(&metadata)?;
+                emit_data(
+                    &mut obj,
+                    WASMER_METADATA_SYMBOL,
+                    &metadata_binary,
+                    std::mem::align_of::<ArchivedModuleMetadata>() as u64,
+                )
+                .map_err(to_compile_error)?;
                 let file = tempfile::Builder::new()
                     .prefix("wasmer_native")
                     .suffix(".o")
@@ -254,7 +282,7 @@ impl NativeArtifact {
                 let obj_bytes = obj.write().map_err(to_compile_error)?;
 
                 file.write(&obj_bytes).map_err(to_compile_error)?;
-                filepath
+                vec![filepath]
             }
         };
 
@@ -312,7 +340,7 @@ impl NativeArtifact {
 
         let linker = engine_inner.linker().executable();
         let output = Command::new(linker)
-            .arg(&filepath)
+            .args(&object_filepaths)
             .arg("-o")
             .arg(&shared_filepath)
             .args(&target_args)
@@ -371,6 +399,7 @@ impl NativeArtifact {
                 .into_boxed_slice(),
             func_data_registry: Arc::new(FuncDataRegistry::new()),
             signatures: signatures.into_boxed_slice(),
+            frame_info_registration: Mutex::new(None),
         })
     }
 
@@ -383,7 +412,7 @@ impl NativeArtifact {
     ) -> Result<Self, CompileError> {
         let mut finished_functions: PrimaryMap<LocalFunctionIndex, FunctionBodyPtr> =
             PrimaryMap::new();
-        for (function_local_index, _function_len) in metadata.function_body_lengths.iter() {
+        for (function_local_index, _) in metadata.frame_infos.iter() {
             let function_name = metadata
                 .get_symbol_registry()
                 .symbol_to_name(Symbol::LocalFunction(function_local_index));
@@ -438,20 +467,6 @@ impl NativeArtifact {
             }
         }
 
-        // Leaving frame infos from now, as they are not yet used
-        // however they might be useful for the future.
-        // let frame_infos = compilation
-        //     .get_frame_info()
-        //     .values()
-        //     .map(|frame_info| SerializableFunctionFrameInfo::Processed(frame_info.clone()))
-        //     .collect::<PrimaryMap<LocalFunctionIndex, _>>();
-        // Self::from_parts(&mut engine_inner, lib, metadata, )
-        // let frame_info_registration = register_frame_info(
-        //     serializable.module.clone(),
-        //     &finished_functions,
-        //     serializable.compilation.function_frame_info.clone(),
-        // );
-
         // Compute indices into the shared signature table.
         let signatures = {
             metadata
@@ -475,6 +490,7 @@ impl NativeArtifact {
                 .into_boxed_slice(),
             func_data_registry: engine_inner.func_data().clone(),
             signatures: signatures.into_boxed_slice(),
+            frame_info_registration: Mutex::new(None),
         })
     }
 
@@ -543,11 +559,11 @@ impl NativeArtifact {
             DeserializeError::CorruptedBinary(format!("Library loading failed: {}", e))
         })?;
         let shared_path: PathBuf = PathBuf::from(path);
-        // We use 12 + 1, as the length of the module will take 12 bytes
+        // We use 16 + 1, as the length of the module will take 16 bytes
         // (we construct it like that in `metadata_length`) and we also want
         // to take the first element of the data to construct the slice from
         // it.
-        let symbol: LibrarySymbol<*mut [u8; 12 + 1]> =
+        let symbol: LibrarySymbol<*mut [u8; 16 + 1]> =
             lib.get(WASMER_METADATA_SYMBOL).map_err(|e| {
                 DeserializeError::CorruptedBinary(format!(
                     "The provided object file doesn't seem to be generated by Wasmer: {}",
@@ -562,8 +578,10 @@ impl NativeArtifact {
         let metadata_len = leb128::read::unsigned(&mut readable).map_err(|_e| {
             DeserializeError::CorruptedBinary("Can't read metadata size".to_string())
         })?;
-        let metadata_slice: &'static [u8] =
-            slice::from_raw_parts(&size[12] as *const u8, metadata_len as usize);
+        let metadata_slice: &[u8] = slice::from_raw_parts(
+            &size[SERIALIZED_METADATA_CONTENT_OFFSET] as *const u8,
+            metadata_len as usize,
+        );
 
         let metadata = ModuleMetadata::deserialize(metadata_slice)?;
 
@@ -593,7 +611,59 @@ impl Artifact for NativeArtifact {
     }
 
     fn register_frame_info(&self) {
-        // Do nothing for now
+        let mut info = self.frame_info_registration.lock().unwrap();
+
+        if info.is_some() {
+            return;
+        }
+
+        // The function sizes might not be completely accurate.
+        // Because of that, we (reverse) order all the functions by their pointer.
+        // [f9, f7, f6, f8...] and calculate their potential function body size by
+        // getting the diff in pointers between functions.
+        let mut prev_pointer = usize::MAX;
+
+        let fp = self.finished_functions.clone();
+        let mut function_pointers = fp.into_iter().collect::<Vec<_>>();
+        // Sort the keys by the values in reverse order (function pointers)
+        // This way we can get the maximum function lengths (since functions can't collide in memory)
+        function_pointers.sort_by(|(_k1, v1), (_k2, v2)| v2.cmp(v1));
+        let mut function_pointers = function_pointers
+            .into_iter()
+            .map(|(index, function_pointer)| {
+                let fp = **function_pointer as usize;
+                // This assumes we never lay any functions bodies across the usize::MAX..nullptr
+                // wrapping point.
+                // Which is generally true on most OSes, but certainly doesn't have to be true.
+                //
+                // Further reading: https://lwn.net/Articles/342330/ \
+                // "There is one little problem with that reasoning, though: NULL (zero) can
+                // actually be a valid pointer address."
+                let current_size_by_ptr = prev_pointer - fp;
+                let frame_info = &self.metadata.frame_infos[index];
+                prev_pointer = fp;
+                // We choose the minimum between the function size given the pointer diff
+                // and the emitted size by the address map
+                let ptr = function_pointer;
+                let length = std::cmp::min(frame_info.address_map.body_len, current_size_by_ptr);
+                (index, FunctionExtent { ptr: *ptr, length })
+            })
+            .collect::<Vec<_>>();
+        // We sort them by key, again.
+        function_pointers.sort_by(|(k1, _v1), (k2, _v2)| k1.cmp(k2));
+
+        let finished_function_extents = function_pointers
+            .into_iter()
+            .map(|(_, function_extent)| function_extent)
+            .collect::<PrimaryMap<LocalFunctionIndex, _>>()
+            .into_boxed_slice();
+
+        let frame_infos = &self.metadata.frame_infos;
+        *info = register_frame_info(
+            self.metadata.compile_info.module.clone(),
+            &finished_function_extents,
+            frame_infos.clone(),
+        );
     }
 
     fn features(&self) -> &Features {
