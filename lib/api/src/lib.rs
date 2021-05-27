@@ -283,8 +283,8 @@ pub mod internals {
     pub use crate::externals::{WithEnv, WithoutEnv};
 }
 
-pub use crate::env::{HostEnvInitError, LazyInit, WasmerEnv};
-pub use crate::exports::{ExportError, Exportable, Exports, ExportsIterator};
+pub use crate::env::{HostEnvInitError, LazyInit, WasmerEnv, InstanceExport};
+pub use crate::exports::{ExportError, Exportable, Exports, ExportsIterator, WeakExports};
 pub use crate::externals::{
     Extern, FromToNativeWasmType, Function, Global, HostFunction, Memory, Table, WasmTypeList,
 };
@@ -322,7 +322,7 @@ pub use wasmer_types::{
 };
 
 // TODO: should those be moved into wasmer::vm as well?
-pub use wasmer_vm::{raise_user_trap, MemoryError};
+pub use wasmer_vm::{raise_user_trap, MemoryError, WeakInstanceRef};
 pub mod vm {
     //! The vm module re-exports wasmer-vm types.
 

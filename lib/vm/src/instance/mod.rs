@@ -11,7 +11,7 @@ mod allocator;
 mod r#ref;
 
 pub use allocator::InstanceAllocator;
-pub use r#ref::InstanceRef;
+pub use r#ref::{InstanceRef, WeakInstanceRef, WeakOrStrongInstanceRef};
 
 use crate::export::VMExtern;
 use crate::func_data_registry::{FuncDataRegistry, VMFuncRef};
@@ -1008,6 +1008,11 @@ impl InstanceHandle {
         &self.instance
     }
 
+    /// TODO: document this
+    pub fn weak_ref(&self) -> WeakInstanceRef {
+        self.instance.downgrade()
+    }
+
     /// Finishes the instantiation process started by `Instance::new`.
     ///
     /// # Safety
@@ -1100,7 +1105,7 @@ impl InstanceHandle {
                     signature,
                     vmctx,
                     call_trampoline,
-                    instance_ref: Some(instance),
+                    instance_ref: Some(WeakOrStrongInstanceRef::Strong(instance)),
                 }
                 .into()
             }
@@ -1113,7 +1118,7 @@ impl InstanceHandle {
                 };
                 VMTable {
                     from,
-                    instance_ref: Some(instance),
+                    instance_ref: Some(WeakOrStrongInstanceRef::Strong(instance)),
                 }
                 .into()
             }
@@ -1126,7 +1131,7 @@ impl InstanceHandle {
                 };
                 VMMemory {
                     from,
-                    instance_ref: Some(instance),
+                    instance_ref: Some(WeakOrStrongInstanceRef::Strong(instance)),
                 }
                 .into()
             }
@@ -1141,7 +1146,7 @@ impl InstanceHandle {
                 };
                 VMGlobal {
                     from,
-                    instance_ref: Some(instance),
+                    instance_ref: Some(WeakOrStrongInstanceRef::Strong(instance)),
                 }
                 .into()
             }

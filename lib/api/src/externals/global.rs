@@ -208,6 +208,13 @@ impl Global {
     pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.vm_global.from, &other.vm_global.from)
     }
+
+    /// Check if the global holds a strong `InstanceRef`.
+    /// None means there's no `InstanceRef`, strong or weak.
+    // TODO: maybe feature gate this, we only need it for tests...
+    pub fn is_strong_instance_ref(&self) -> Option<bool> {
+        self.vm_global.instance_ref.as_ref().map(|v| v.is_strong())
+    }
 }
 
 impl fmt::Debug for Global {
@@ -220,15 +227,19 @@ impl fmt::Debug for Global {
     }
 }
 
-impl<'a> Exportable<'a> for Global {
+impl Exportable for Global {
     fn to_export(&self) -> Export {
         self.vm_global.clone().into()
     }
 
-    fn get_self_from_extern(_extern: &'a Extern) -> Result<&'a Self, ExportError> {
+    fn get_self_from_extern<'a>(_extern: &'a Extern) -> Result<&'a Self, ExportError> {
         match _extern {
             Extern::Global(global) => Ok(global),
             _ => Err(ExportError::IncompatibleType),
         }
+    }
+
+    fn into_weak_instance_ref(&mut self) {
+        self.vm_global.instance_ref.as_mut().map(|v| v.into_weak());
     }
 }
