@@ -43,6 +43,8 @@ members = [
     "lib/engine-universal",
     "lib/engine-dylib",
     "lib/engine-object-file",
+    "lib/memoryprofiler",
+    "lib/memoryprofiler/derive",
     "lib/object",
     "lib/vm",
     "lib/wasi",
