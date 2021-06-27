@@ -10,7 +10,7 @@
 //! `generate_import_object` function.  These are directories that the caller has given
 //! the WASI module permission to access.
 //!
-//! You can implement `WasiFile` for your own types to get custom behavior and extend WASI, see the
+//! You can implement `VirtualFile` for your own types to get custom behavior and extend WASI, see the
 //! [WASI plugin example](https://github.com/wasmerio/wasmer/blob/master/examples/plugin.rs).
 
 #![allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
@@ -34,6 +34,8 @@ use std::{
     time::SystemTime,
 };
 use tracing::debug;
+
+use wasmer_virtual_fs::{FileSystem, FsError, OpenOptions, VirtualFile};
 
 /// the fd value of the virtual root
 pub const VIRTUAL_ROOT_FD: __wasi_fd_t = 3;
@@ -72,7 +74,7 @@ pub struct InodeVal {
 pub enum Kind {
     File {
         /// The open file, if it's open
-        handle: Option<Box<dyn WasiFile>>,
+        handle: Option<Box<dyn VirtualFile>>,
         /// The path on the host system where the file is located
         /// This is deprecated and will be removed soon
         path: PathBuf,
@@ -86,7 +88,7 @@ pub enum Kind {
         /// Parent directory
         parent: Option<Inode>,
         /// The path on the host system where the directory is located
-        // TODO: wrap it like WasiFile
+        // TODO: wrap it like VirtualFile
         path: PathBuf,
         /// The entries of a directory are lazily filled.
         entries: HashMap<String, Inode>,
@@ -341,36 +343,36 @@ impl WasiFs {
         Ok((wasi_fs, root_inode))
     }
 
-    /// Get the `WasiFile` object at stdout
-    pub fn stdout(&self) -> Result<&Option<Box<dyn WasiFile>>, WasiFsError> {
+    /// Get the `VirtualFile` object at stdout
+    pub fn stdout(&self) -> Result<&Option<Box<dyn VirtualFile>>, FsError> {
         self.std_dev_get(__WASI_STDOUT_FILENO)
     }
-    /// Get the `WasiFile` object at stdout mutably
-    pub fn stdout_mut(&mut self) -> Result<&mut Option<Box<dyn WasiFile>>, WasiFsError> {
+    /// Get the `VirtualFile` object at stdout mutably
+    pub fn stdout_mut(&mut self) -> Result<&mut Option<Box<dyn VirtualFile>>, FsError> {
         self.std_dev_get_mut(__WASI_STDOUT_FILENO)
     }
 
-    /// Get the `WasiFile` object at stderr
-    pub fn stderr(&self) -> Result<&Option<Box<dyn WasiFile>>, WasiFsError> {
+    /// Get the `VirtualFile` object at stderr
+    pub fn stderr(&self) -> Result<&Option<Box<dyn VirtualFile>>, FsError> {
         self.std_dev_get(__WASI_STDERR_FILENO)
     }
-    /// Get the `WasiFile` object at stderr mutably
-    pub fn stderr_mut(&mut self) -> Result<&mut Option<Box<dyn WasiFile>>, WasiFsError> {
+    /// Get the `VirtualFile` object at stderr mutably
+    pub fn stderr_mut(&mut self) -> Result<&mut Option<Box<dyn VirtualFile>>, FsError> {
         self.std_dev_get_mut(__WASI_STDERR_FILENO)
     }
 
-    /// Get the `WasiFile` object at stdin
-    pub fn stdin(&self) -> Result<&Option<Box<dyn WasiFile>>, WasiFsError> {
+    /// Get the `VirtualFile` object at stdin
+    pub fn stdin(&self) -> Result<&Option<Box<dyn VirtualFile>>, FsError> {
         self.std_dev_get(__WASI_STDIN_FILENO)
     }
-    /// Get the `WasiFile` object at stdin mutably
-    pub fn stdin_mut(&mut self) -> Result<&mut Option<Box<dyn WasiFile>>, WasiFsError> {
+    /// Get the `VirtualFile` object at stdin mutably
+    pub fn stdin_mut(&mut self) -> Result<&mut Option<Box<dyn VirtualFile>>, FsError> {
         self.std_dev_get_mut(__WASI_STDIN_FILENO)
     }
 
     /// Internal helper function to get a standard device handle.
     /// Expects one of `__WASI_STDIN_FILENO`, `__WASI_STDOUT_FILENO`, `__WASI_STDERR_FILENO`.
-    fn std_dev_get(&self, fd: __wasi_fd_t) -> Result<&Option<Box<dyn WasiFile>>, WasiFsError> {
+    fn std_dev_get(&self, fd: __wasi_fd_t) -> Result<&Option<Box<dyn VirtualFile>>, FsError> {
         if let Some(fd) = self.fd_map.get(&fd) {
             if let Kind::File { ref handle, .. } = self.inodes[fd.inode].kind {
                 Ok(handle)
@@ -380,7 +382,7 @@ impl WasiFs {
             }
         } else {
             // this should only trigger if we made a mistake in this crate
-            Err(WasiFsError::NoDevice)
+            Err(FsError::NoDevice)
         }
     }
     /// Internal helper function to mutably get a standard device handle.
@@ -388,7 +390,7 @@ impl WasiFs {
     fn std_dev_get_mut(
         &mut self,
         fd: __wasi_fd_t,
-    ) -> Result<&mut Option<Box<dyn WasiFile>>, WasiFsError> {
+    ) -> Result<&mut Option<Box<dyn VirtualFile>>, FsError> {
         if let Some(fd) = self.fd_map.get_mut(&fd) {
             if let Kind::File { ref mut handle, .. } = self.inodes[fd.inode].kind {
                 Ok(handle)
@@ -398,7 +400,7 @@ impl WasiFs {
             }
         } else {
             // this should only trigger if we made a mistake in this crate
-            Err(WasiFsError::NoDevice)
+            Err(FsError::NoDevice)
         }
     }
 
@@ -426,8 +428,8 @@ impl WasiFs {
         rights: __wasi_rights_t,
         rights_inheriting: __wasi_rights_t,
         flags: __wasi_fdflags_t,
-    ) -> Result<__wasi_fd_t, WasiFsError> {
-        let base_fd = self.get_fd(base).map_err(WasiFsError::from_wasi_err)?;
+    ) -> Result<__wasi_fd_t, FsError> {
+        let base_fd = self.get_fd(base).map_err(fs_error_from_wasi_err)?;
         // TODO: check permissions here? probably not, but this should be
         // an explicit choice, so justify it in a comment when we remove this one
         let mut cur_inode = base_fd.inode;
@@ -440,7 +442,7 @@ impl WasiFs {
                 Kind::Dir { ref entries, .. } | Kind::Root { ref entries } => {
                     if let Some(_entry) = entries.get(&segment_name) {
                         // TODO: this should be fixed
-                        return Err(WasiFsError::AlreadyExists);
+                        return Err(FsError::AlreadyExists);
                     }
 
                     let kind = Kind::Dir {
@@ -464,7 +466,7 @@ impl WasiFs {
 
                     cur_inode = inode;
                 }
-                _ => return Err(WasiFsError::BaseNotDirectory),
+                _ => return Err(FsError::BaseNotDirectory),
             }
         }
 
@@ -476,7 +478,7 @@ impl WasiFs {
             Fd::READ | Fd::WRITE,
             cur_inode,
         )
-        .map_err(WasiFsError::from_wasi_err)
+        .map_err(fs_error_from_wasi_err)
     }
 
     /// Opens a user-supplied file in the directory specified with the
@@ -486,14 +488,14 @@ impl WasiFs {
     pub fn open_file_at(
         &mut self,
         base: __wasi_fd_t,
-        file: Box<dyn WasiFile>,
+        file: Box<dyn VirtualFile>,
         open_flags: u16,
         name: String,
         rights: __wasi_rights_t,
         rights_inheriting: __wasi_rights_t,
         flags: __wasi_fdflags_t,
-    ) -> Result<__wasi_fd_t, WasiFsError> {
-        let base_fd = self.get_fd(base).map_err(WasiFsError::from_wasi_err)?;
+    ) -> Result<__wasi_fd_t, FsError> {
+        let base_fd = self.get_fd(base).map_err(fs_error_from_wasi_err)?;
         // TODO: check permissions here? probably not, but this should be
         // an explicit choice, so justify it in a comment when we remove this one
         let base_inode = base_fd.inode;
@@ -502,7 +504,7 @@ impl WasiFs {
             Kind::Dir { ref entries, .. } | Kind::Root { ref entries } => {
                 if let Some(_entry) = entries.get(&name) {
                     // TODO: eventually change the logic here to allow overwrites
-                    return Err(WasiFsError::AlreadyExists);
+                    return Err(FsError::AlreadyExists);
                 }
 
                 let kind = Kind::File {
@@ -513,7 +515,7 @@ impl WasiFs {
 
                 let inode = self
                     .create_inode(kind, false, name.clone())
-                    .map_err(|_| WasiFsError::IOError)?;
+                    .map_err(|_| FsError::IOError)?;
                 // reborrow to insert
                 match &mut self.inodes[base_inode].kind {
                     Kind::Dir {
@@ -526,9 +528,9 @@ impl WasiFs {
                 }
 
                 self.create_fd(rights, rights_inheriting, flags, open_flags, inode)
-                    .map_err(WasiFsError::from_wasi_err)
+                    .map_err(fs_error_from_wasi_err)
             }
-            _ => Err(WasiFsError::BaseNotDirectory),
+            _ => Err(FsError::BaseNotDirectory),
         }
     }
 
@@ -539,8 +541,8 @@ impl WasiFs {
     pub fn swap_file(
         &mut self,
         fd: __wasi_fd_t,
-        file: Box<dyn WasiFile>,
-    ) -> Result<Option<Box<dyn WasiFile>>, WasiFsError> {
+        file: Box<dyn VirtualFile>,
+    ) -> Result<Option<Box<dyn VirtualFile>>, FsError> {
         let mut ret = Some(file);
         match fd {
             __WASI_STDIN_FILENO => {
@@ -553,14 +555,14 @@ impl WasiFs {
                 std::mem::swap(self.stderr_mut()?, &mut ret);
             }
             _ => {
-                let base_fd = self.get_fd(fd).map_err(WasiFsError::from_wasi_err)?;
+                let base_fd = self.get_fd(fd).map_err(fs_error_from_wasi_err)?;
                 let base_inode = base_fd.inode;
 
                 match &mut self.inodes[base_inode].kind {
                     Kind::File { ref mut handle, .. } => {
                         std::mem::swap(handle, &mut ret);
                     }
-                    _ => return Err(WasiFsError::NotAFile),
+                    _ => return Err(FsError::NotAFile),
                 }
             }
         }
@@ -1060,13 +1062,13 @@ impl WasiFs {
             __WASI_STDIN_FILENO => (),
             __WASI_STDOUT_FILENO => self
                 .stdout_mut()
-                .map_err(WasiFsError::into_wasi_err)?
+                .map_err(fs_error_into_wasi_err)?
                 .as_mut()
                 .and_then(|f| f.flush().ok())
                 .ok_or(__WASI_EIO)?,
             __WASI_STDERR_FILENO => self
                 .stderr_mut()
-                .map_err(WasiFsError::into_wasi_err)?
+                .map_err(fs_error_into_wasi_err)?
                 .as_mut()
                 .and_then(|f| f.flush().ok())
                 .ok_or(__WASI_EIO)?,
@@ -1221,7 +1223,7 @@ impl WasiFs {
 
     fn create_std_dev_inner(
         &mut self,
-        handle: Box<dyn WasiFile>,
+        handle: Box<dyn VirtualFile>,
         name: &'static str,
         raw_fd: __wasi_fd_t,
         rights: __wasi_rights_t,
@@ -1383,6 +1385,50 @@ impl WasiFs {
     }
 }
 
+// Implementations of direct to FS calls so that we can easily change their implementation
+impl WasiState {
+    pub(crate) fn fs_read_dir<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<wasmer_virtual_fs::ReadDir, __wasi_errno_t> {
+        self.fs_backing
+            .read_dir(path.as_ref())
+            .map_err(fs_error_into_wasi_err)
+    }
+
+    pub(crate) fn fs_create_dir<P: AsRef<Path>>(&self, path: P) -> Result<(), __wasi_errno_t> {
+        self.fs_backing
+            .create_dir(path.as_ref())
+            .map_err(fs_error_into_wasi_err)
+    }
+
+    pub(crate) fn fs_remove_dir<P: AsRef<Path>>(&self, path: P) -> Result<(), __wasi_errno_t> {
+        self.fs_backing
+            .remove_dir(path.as_ref())
+            .map_err(fs_error_into_wasi_err)
+    }
+
+    pub(crate) fn fs_rename<P: AsRef<Path>, Q: AsRef<Path>>(
+        &self,
+        from: P,
+        to: Q,
+    ) -> Result<(), __wasi_errno_t> {
+        self.fs_backing
+            .rename(from.as_ref(), to.as_ref())
+            .map_err(fs_error_into_wasi_err)
+    }
+
+    pub(crate) fn fs_remove_file<P: AsRef<Path>>(&self, path: P) -> Result<(), __wasi_errno_t> {
+        self.fs_backing
+            .remove_file(path.as_ref())
+            .map_err(fs_error_into_wasi_err)
+    }
+
+    pub(crate) fn fs_new_open_options(&self) -> OpenOptions {
+        self.fs_backing.new_open_options()
+    }
+}
+
 /// Top level data type containing all* the state with which WASI can
 /// interact.
 ///
@@ -1411,11 +1457,19 @@ impl WasiFs {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Serialize, Deserialize)]
+//#[derive(Debug, Serialize, Deserialize)]
 pub struct WasiState {
     pub fs: WasiFs,
     pub args: Vec<Vec<u8>>,
     pub envs: Vec<Vec<u8>>,
+    fs_backing: Box<dyn FileSystem>,
+}
+
+impl std::fmt::Debug for WasiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // TODO: reimpl Debug either here or on fs_backing to auto-derive it
+        f.write_str("struct WasiState")
+    }
 }
 
 impl WasiState {
@@ -1428,16 +1482,32 @@ impl WasiState {
 
     /// Turn the WasiState into bytes
     pub fn freeze(&self) -> Option<Vec<u8>> {
-        bincode::serialize(self).ok()
+        todo!("temporarily disabled")
+        //bincode::serialize(self).ok()
     }
 
     /// Get a WasiState from bytes
     pub fn unfreeze(bytes: &[u8]) -> Option<Self> {
-        bincode::deserialize(bytes).ok()
+        todo!("temporarily disabled")
+        //bincode::deserialize(bytes).ok()
     }
 }
 
 pub fn host_file_type_to_wasi_file_type(file_type: fs::FileType) -> __wasi_filetype_t {
+    // TODO: handle other file types
+    if file_type.is_dir() {
+        __WASI_FILETYPE_DIRECTORY
+    } else if file_type.is_file() {
+        __WASI_FILETYPE_REGULAR_FILE
+    } else if file_type.is_symlink() {
+        __WASI_FILETYPE_SYMBOLIC_LINK
+    } else {
+        __WASI_FILETYPE_UNKNOWN
+    }
+}
+pub fn virtual_file_type_to_wasi_file_type(
+    file_type: wasmer_virtual_fs::FileType,
+) -> __wasi_filetype_t {
     // TODO: handle other file types
     if file_type.is_dir() {
         __WASI_FILETYPE_DIRECTORY

@@ -2705,6 +2705,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmer-virtual-fs"
+version = "2.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "thiserror",
+ "tracing",
+ "typetag",
+]
+
+[[package]]
 name = "wasmer-vm"
 version = "2.0.0"
 dependencies = [
@@ -2737,6 +2748,7 @@ dependencies = [
  "tracing",
  "typetag",
  "wasmer",
+ "wasmer-virtual-fs",
  "wasmer-wasi-types",
  "winapi",
 ]
