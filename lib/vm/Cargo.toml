@@ -33,6 +33,11 @@ cc = "1.0"
 [badges]
 maintenance = { status = "actively-developed" }
 
+[target.'cfg(target_os = "linux")']
+rustflags = [
+  "-C", "link-arg=-Wl,-E"
+]
+
 [features]
 default = []
 enable-rkyv = ["rkyv"]
