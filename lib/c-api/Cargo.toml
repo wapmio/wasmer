@@ -47,6 +47,11 @@ paste = "1.0"
 field-offset = "0.3.3"
 inline-c = "0.1.5"
 
+[target.'cfg(target_os = "linux")']
+rustflags = [
+  "-C", "link-arg=-Wl,-E"
+]
+
 [features]
 default = [
     "wat",
